@@ -7,6 +7,7 @@ using Sfs2X.Entities;
 using Sfs2X.Entities.Data;
 using Sfs2X.Logging;
 using Sfs2X.Requests;
+using System;
 using UnityEngine;
 
 namespace justbake.sfi
@@ -50,7 +51,7 @@ namespace justbake.sfi
 		public User LocalUser => (sfs != null) ? sfs.MySelf : null;
 		public bool IsConnected => sfs != null && sfs.IsConnected;
 		public bool IsConnecting => sfs != null && sfs.IsConnecting;
-		public bool IsLogedIn => sfs != null && LocalUser != null;
+		public bool IsLoggedIn => sfs != null && LocalUser != null;
 		public bool IsUdpAvailable => sfs != null && sfs.UdpAvailable;
 
 		/// <summary>
@@ -89,30 +90,34 @@ namespace justbake.sfi
 
 		public void Disconnect() {
 			sfs.Disconnect();
-			sfs.RemoveAllEventListeners();
-			sfs = null;
 		}
 
-		public void Login(string username = null, string password = null, string zoneName = null, ISFSObject parameters = null) {
-			if (username != null && password != null && zoneName != null && parameters != null) {
-				sfs.Send(new LoginRequest(username, password, zoneName, parameters));
-			} else if (username != null && password != null && zoneName != null && parameters == null) {
-				sfs.Send(new LoginRequest(username, password, zoneName));
-			} else if (username != null && password != null && zoneName == null && parameters == null) {
-				sfs.Send(new LoginRequest(username, password));
-			} else if (username != null && password == null && zoneName == null && parameters == null) {
-				sfs.Send(new LoginRequest(username));
-			} else if (username == null && password == null && zoneName == null && parameters == null) {
-				sfs.Send(new LoginRequest(""));
-			}
+		public void Login(string username = null, string password = null, ISFSObject parameters = null) {
+			sfs.Send(new LoginRequest(username, password, ConnectionSettings.Zone, parameters));
 		}
 
 		public void Logout() {
-		
+			sfs.Send(new LogoutRequest());
 		}
 
 		public void InitUdp() {
-			
+			sfs.InitUDP();
+		}
+
+		public void JoinRoom(object id, string password = null, int? roomIdToLeave = null, bool asSpectator = false) {
+			if (!IsLoggedIn || id == null) {
+				return;
+			}
+
+			sfs.Send(new JoinRoomRequest(id, password, roomIdToLeave, asSpectator));
+		}
+
+		public void LeaveRoom(object id) {
+			if (sfs.TryGetRoomUserIsIn(id, out Room room)) {
+				sfs.Send(new LeaveRoomRequest(room));
+			} else {
+				Debug.LogError($"User not joined in room with {((id is string) ? "name" : "id")} {id}");
+			}
 		}
 		#endregion
 		#region protected
@@ -123,6 +128,8 @@ namespace justbake.sfi
 		protected virtual void OnLoginSuccess(ISFSObject data) {}
 		protected virtual void OnLoginError(string message, short code) {}
 		protected virtual void OnLogout() {}
+		protected virtual void OnRoomJoin(Room room) {}
+		protected virtual void OnRoomJoinError(string message, short code) {}
 		#endregion
 		#endregion
 		#region private
@@ -135,14 +142,20 @@ namespace justbake.sfi
 #if !UNITY_WEBGL
 			if (ConnectionSettings.Encrypt)
 				sfs.AddEventListener(SFSEvent.CRYPTO_INIT, OnCryptoInit);
+
+			if (EnableLagMonitor)
+				sfs.AddEventListener(SFSEvent.PING_PONG, OnPingPong);
 #endif
 
 			sfs.AddEventListener(SFSEvent.LOGIN, OnLogin);
 			sfs.AddEventListener(SFSEvent.LOGIN_ERROR, OnLoginError);
 			sfs.AddEventListener(SFSEvent.LOGOUT, OnLogout);
 
-			if (EnableLagMonitor)
-				sfs.AddEventListener(SFSEvent.PING_PONG, OnPingPong);
+			sfs.AddEventListener(SFSEvent.ROOM_JOIN, OnRoomJoin);
+			sfs.AddEventListener(SFSEvent.ROOM_JOIN_ERROR, OnRoomJoinError);
+
+			sfs.AddEventListener(SFSEvent.USER_ENTER_ROOM, OnUserEnterRoom);
+			sfs.AddEventListener(SFSEvent.USER_EXIT_ROOM, OnUserExitRoom);
 		}
 		#endregion
 		#endregion
@@ -173,6 +186,7 @@ namespace justbake.sfi
 		#endregion
 
 		#region Smartfox Callbacks
+		#region Connection
 		/// <summary>
 		/// Dispatched when a connection between the client and a SmartFoxServer 2X instance is attempted.
 		/// </summary>
@@ -180,7 +194,7 @@ namespace justbake.sfi
 		/// success	(bool) The connection result: true if a connection was established, false otherwise.
 		/// </param>
 		private void OnConnection(BaseEvent evt) {
-			if (evt.Params.TryGetValue("success", out object value) && value is bool success && success) {
+			if (evt.TryGetSuccessParam(out bool success) && success) {
 				Debug.Log("Connection established successfully");
 				Debug.Log($"SFS2X API version: {sfs.Version}");
 				Debug.Log($"Connection mode is: {sfs.ConnectionMode}");
@@ -189,10 +203,10 @@ namespace justbake.sfi
 				if (ConnectionSettings.Encrypt)
 					sfs.InitCrypto();
 				else if (LoginOnConnection)
-					Login(username, password, zoneName, parameters);
+					Login(username, password, parameters);
 #else
 				if (LoginOnConnection)
-					Login(username, password, zoneName, parameters);
+					Login(username, password, parameters);
 #endif
 
 			} else {
@@ -211,7 +225,7 @@ namespace justbake.sfi
 				sfs.RemoveAllEventListeners();
 				sfs = null;
 			}
-			if (evt.Params.TryGetValue("reason", out object value) && value is string reason) {
+			if (evt.TryGetReasonMessageParam(out string reason)) {
 				Debug.Log($"Connection was lost, Reason: {reason}");
 				OnConnectionLost(reason);
 			}
@@ -225,10 +239,10 @@ namespace justbake.sfi
 		/// errorMessage	(string) If success is false, provides additional details on the occurred error.
 		/// </param>
 		private void OnCryptoInit(BaseEvent evt) {
-			if (evt.Params.TryGetValue("success", out object value) && value is bool success && success) {
+			if (evt.TryGetSuccessParam(out bool success) && success) {
 				if (LoginOnConnection)
-					Login(username, password, zoneName, parameters);
-			}else if (evt.Params.TryGetValue("errorMessage", out object value1) && value1 is string errorMessage) {
+					Login(username, password, parameters);
+			}else if (evt.TryGetErrorMessageParam(out string errorMessage)) {
 				Debug.Log($"Encryption initialization failed: {errorMessage}");
 				sfs.Disconnect();
 			}
@@ -241,12 +255,26 @@ namespace justbake.sfi
 		/// success	(bool) true if UDP connection initialization is successful, false otherwise.
 		/// </param>
 		private void OnUdpInit(BaseEvent evt) {
-			if (evt.Params.TryGetValue("success", out object value) && value is bool success && success) {
+			if (evt.TryGetSuccessParam(out bool success) && success) {
 				Debug.Log("UDP Ready!");
 			} else {
 				Debug.Log("UDP Error!");
 			}
 		}
+
+		/// <summary>
+		/// Dispatched when a new lag value measurement is available.
+		/// </summary>
+		/// <param name="evt">
+		/// lagValue	(int) The average of the last ten measured lag values, expressed in milliseconds.
+		/// </param>
+		private void OnPingPong(BaseEvent evt) {
+			if (evt.TryGetLagValueParam(out int lagValue)) {
+				this.lagValue = lagValue;
+			}
+		}
+		#endregion
+		#region Login
 		/// <summary>
 		/// Dispatched when the current user performs a successful login in a server Zone.
 		/// </summary>
@@ -255,17 +283,15 @@ namespace justbake.sfi
 		/// data	(ISFSObject) An object containing custom parameters returned by a custom login system, if any.
 		/// </param>
 		private void OnLogin(BaseEvent evt) {
-			if (evt.Params.TryGetValue("user", out object value) && value is User user) {
+			if (evt.TryGetUserParam(out User user)) {
 				sfs.EnableLagMonitor(EnableLagMonitor, Interval, QueueSize);
-				if (LocalUser != user)
-					Debug.LogError($"The user that logged {user} in is not the localUser {LocalUser}");
+				Debug.Log($"You have logged in as {user.Name}");
 			} else {
 				Debug.LogError("The param user was not found or is not a user!");
 			}
-			ISFSObject data = new SFSObject();
 
-			if (evt.Params.TryGetValue("data", out object objData) && objData is ISFSObject isfsdata) {
-					data = isfsdata;
+			if (!evt.TryGetDataParam(out ISFSObject data)) {
+				data = new SFSObject();
 			}
 
 			OnLoginSuccess(data);
@@ -280,8 +306,8 @@ namespace justbake.sfi
 		/// errorCode	(short) The error code.
 		/// </param>
 		private void OnLoginError(BaseEvent evt) {
-			if (evt.Params.TryGetValue("errorMessage", out object value) && value is string errorMessage && evt.Params.TryGetValue("errorCode", out object value1) && value1 is short errorCode) {
-				Debug.LogError($"Login Error({errorCode}):\n{errorMessage}");
+			if (evt.TryGetErrorMessageParam(out string errorMessage) && evt.TryGetErrorCodeParam(out short errorCode)) {
+				Debug.LogError($"Login Error {errorCode}:\n{errorMessage}");
 				OnLoginError(errorMessage, errorCode);
 			}
 		}
@@ -298,18 +324,63 @@ namespace justbake.sfi
 				Disconnect();
 			}
 		}
-
+		#endregion
+		#region Rooms
 		/// <summary>
-		/// Dispatched when a new lag value measurement is available.
+		/// Dispatched when a Room is joined by the current user.
 		/// </summary>
 		/// <param name="evt">
-		/// lagValue	(int) The average of the last ten measured lag values, expressed in milliseconds.
+		/// room	(Room) An object representing the Room that was joined.
 		/// </param>
-		private void OnPingPong(BaseEvent evt) {
-			if (evt.Params.TryGetValue("lagValue", out object value) && value is int lagValue) {
-				this.lagValue = lagValue;
+		private void OnRoomJoin(BaseEvent evt) {
+			if (evt.TryGetRoomParam(out Room room)) {
+				Debug.Log("Room joined: " + room.Name);
+				OnRoomJoin(room);
+				//TODO: make the scene manager load the the appropriate scene the represents the room
 			}
 		}
+
+		/// <summary>
+		/// Dispatched when an error occurs while the current user is trying to join a Room.
+		/// </summary>
+		/// <param name="evt">
+		/// errorMessage	(string) A message containing the description of the error.
+		///errorCode	(short) The error code.
+		/// </param>
+		private void OnRoomJoinError(BaseEvent evt) {
+			if (evt.TryGetErrorMessageParam(out string errorMessage) && evt.TryGetErrorCodeParam(out short errorCode)) {
+				Debug.LogError($"Room Join Error({errorCode}):\n{errorMessage}");
+				OnRoomJoinError(errorMessage, errorCode);
+			}
+		}
+		/// <summary>
+		/// Dispatched when one of the Rooms joined by the current user is entered by another user.
+		/// </summary>
+		/// <param name="evt">
+		/// user	(User) An object representing the user who joined the Room.
+		/// room	(Room) An object representing the Room that was joined by a user.
+		/// </param>
+		private void OnUserEnterRoom(BaseEvent evt) {
+			//TODO: spawn in a remote user prefab into the game scene if the room is the current scene.
+			if(evt.TryGetUserParam(out User user) && evt.TryGetRoomParam(out Room room)) {
+				Debug.Log($"User: {user.Name} has just joined room: {room.Name}");
+			}
+		}
+		/// <summary>
+		/// Dispatched when one of the Rooms joined by the current user is left by another user, or by the current user himself.
+		/// </summary>
+		/// <param name="evt">
+		/// user	(User) An object representing the user who left the Room.
+		/// room	(Room) An object representing the Room that was left by the user.
+		/// </param>
+		private void OnUserExitRoom(BaseEvent evt) {
+			//TODO: destroy user game object in scene if the room is the current scene.
+			//TODO: if the local user left make the scene manager unload the appropriate scene.
+			if (evt.TryGetUserParam(out User user) && evt.TryGetRoomParam(out Room room)) {
+				Debug.Log($"User: {user.Name} has just left room: {room.Name}");
+			}
+		}
+		#endregion
 		#endregion
 	}
 }
