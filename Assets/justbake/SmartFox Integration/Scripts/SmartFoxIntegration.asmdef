@@ -1,9 +1,7 @@
 {
     "name": "SmartFoxIntegration",
-    "rootNamespace": "",
-    "references": [
-        "GUID:74cb6065dd7d15e46b7c2bffaf4581ea"
-    ],
+    "rootNamespace": "justbake.sfi",
+    "references": [],
     "includePlatforms": [],
     "excludePlatforms": [
         "WebGL"

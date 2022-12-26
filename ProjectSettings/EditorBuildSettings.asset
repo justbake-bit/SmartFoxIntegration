@@ -4,5 +4,8 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/justbake/SmartFox Integration/Scenes/TestScene.unity
+    guid: b860936ff47ecc04d810d690cab52c0a
   m_configObjects: {}
