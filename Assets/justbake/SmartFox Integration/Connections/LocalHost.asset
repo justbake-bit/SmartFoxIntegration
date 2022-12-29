@@ -12,11 +12,21 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 28964006d8bcbde4dbfa69dd09db290e, type: 3}
   m_Name: LocalHost
   m_EditorClassIdentifier: 
-  Host: localhost
+  Debug: 0
+  Encrypt: 0
+  Host: 127.0.0.1
   HttpPort: 8080
   HttpsPort: 8080
   Port: 9933
-  TcpNoDelay: 0
-  UdpHost: localhost
+  TcpNoDelay: 1
+  UdpHost: 127.0.0.1
   UdpPort: 9933
   Zone: BasicExamples
+  IsActive: 1
+  PollingRate: 500
+  ByPassLocal: 0
+  ProxyHost: localhost
+  Password: 
+  ProxtPort: 9933
+  UserName: 
+  UseHttps: 0

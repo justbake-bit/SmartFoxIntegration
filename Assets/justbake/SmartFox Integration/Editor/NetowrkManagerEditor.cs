@@ -28,11 +28,18 @@ namespace justbake.sfi
 					networkManager.Connect();
 				}
 
+				if(networkManager.IsConnected && !networkManager.IsLoggedIn && GUILayout.Button("Login")) {
+					networkManager.networkLogin.Login();
+				}
+
 				if (networkManager.IsConnected && GUILayout.Button("Disconnect")) {
 					networkManager.Disconnect();
 				}
 
 				if (networkManager.IsLoggedIn) {
+					if (!networkManager.IsUdpAvailable && GUILayout.Button("Connect UDP")) {
+						networkManager.InitUdp();
+					}
 					roomName = GUILayout.TextField(roomName);
 					spectate = GUILayout.Toggle(spectate, "Spectate");
 					if (GUILayout.Button("Join")) {

@@ -8,42 +8,54 @@ using Sfs2X.Entities.Data;
 using Sfs2X.Logging;
 using Sfs2X.Requests;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
+using UnityEditor.SearchService;
 using UnityEngine;
 
 namespace justbake.sfi
 {
-	[DisallowMultipleComponent]
+	[DisallowMultipleComponent, RequireComponent(typeof(NetworkLogin))]
 	[AddComponentMenu("Network/Network Manager")]
 	public class NetworkManager : MonoBehaviour {
 
 		public static NetworkManager Instance;
 
 		#region Editor
-		[Header("Singleton Settings")]
+		[Header("Configuration")]
 		[SerializeField] bool DestroyOnLoad = false;
 		[SerializeField] bool RunInBackground = false;
-		[Header("Connection Settings")]
-		[SerializeField] private ConnectionSettings ConnectionSettings;
+
+		[Header("Network Info")]
+		[SerializeField] internal ConnectionSettings ConnectionSettings;
 		[SerializeField] private bool ConnectOnStart;
 
-		[Header("Login Settings")]
-		[SerializeField] private bool DisconnectOnLogout;
-		[SerializeField] private bool LoginOnConnection;
-		[SerializeField] private bool InitUdpOnLogin;
-		[Header("Login Details")]
-		public string username = null;
-		public string password = null;
-		public string zoneName = null;
-		public ISFSObject parameters = null;
+		[SerializeField] internal bool EnableLagMonitor = true;
+		[SerializeField] internal int Interval = 4;
+		[SerializeField] internal int QueueSize = 10;
 
-		[Header("Smartfox settings")]
-		[SerializeField] bool EnableLagMonitor = true;
-		[SerializeField] int Interval = 4;
-		[SerializeField] int QueueSize = 10;
+		[Header("Login")]
+		public NetworkLogin networkLogin;
+
+		[Header("Scene Management")]
+		[SerializeField] internal string OfflineScene;
+		[SerializeField] internal string OnilneScene;
+
+		[Header("Player Object")]
+		[SerializeField] internal GameObject PlayerPrefab;
+		[SerializeField] internal GameObject SpectatorPrefab;
+		[Tooltip("Will Spawn the player when the user is logged in.")]
+		[SerializeField] internal bool AutoCreatePlayer;
+		[Tooltip("Will Spawn the player when the user joins a room.")]
+		[SerializeField] internal bool CreatePlayerForEachRoom;
+		[Tooltip("Will destroy the player when the user leaves a room.")]
+		[SerializeField] internal bool DestroyPlayerForEachRoom;
 
 		[Header("Debug Settings")]
-		[SerializeField] bool EnableConsoleTrace = false;
+		[SerializeField] internal bool EnableConsoleTrace = false;
 		[SerializeField] LogLevel LogLevel = LogLevel.ERROR;
+
+		public List<GameObject> SpawnablePrefabs = new List<GameObject>();
 		#endregion
 
 		#region public properties
@@ -62,9 +74,11 @@ namespace justbake.sfi
 
 		#region private properties
 
-		private SmartFox sfs;
+		internal SmartFox sfs;
 
 		private int lagValue;
+
+		private GameObject LocalUserGameObject;
 
 		#endregion
 
@@ -92,14 +106,6 @@ namespace justbake.sfi
 			sfs.Disconnect();
 		}
 
-		public void Login(string username = null, string password = null, ISFSObject parameters = null) {
-			sfs.Send(new LoginRequest(username, password, ConnectionSettings.Zone, parameters));
-		}
-
-		public void Logout() {
-			sfs.Send(new LogoutRequest());
-		}
-
 		public void InitUdp() {
 			sfs.InitUDP();
 		}
@@ -125,11 +131,24 @@ namespace justbake.sfi
 		protected virtual void OnConnectionSuccess() {}
 		protected virtual void OnConnectionFailure() {}
 		protected virtual void OnConnectionLost(string reason) {}
-		protected virtual void OnLoginSuccess(ISFSObject data) {}
-		protected virtual void OnLoginError(string message, short code) {}
-		protected virtual void OnLogout() {}
 		protected virtual void OnRoomJoin(Room room) {}
 		protected virtual void OnRoomJoinError(string message, short code) {}
+
+		/*internal virtual void SpawnPlayer(User user) {
+			if(user.Equals(LocalUser) && LocalUserGameObject != null && !CreatePlayerForEachRoom) {
+				return;
+			}
+			if((!user.IsSpectator && PlayerPrefab != null) || (user.IsSpectator && SpectatorPrefab != null)) {
+				GameObject player = user.IsSpectator ? Instantiate(SpectatorPrefab) : Instantiate(PlayerPrefab);
+				NetworkUser playerUser = player.GetComponent<NetworkUser>();
+				playerUser.user = user;
+				player.name = user.Name + "_" + user.Id;
+				if (user.Equals(LocalUser)) {
+					LocalUserGameObject = player;
+				}
+			}
+		}*/
+
 		#endregion
 		#endregion
 		#region private
@@ -146,10 +165,6 @@ namespace justbake.sfi
 			if (EnableLagMonitor)
 				sfs.AddEventListener(SFSEvent.PING_PONG, OnPingPong);
 #endif
-
-			sfs.AddEventListener(SFSEvent.LOGIN, OnLogin);
-			sfs.AddEventListener(SFSEvent.LOGIN_ERROR, OnLoginError);
-			sfs.AddEventListener(SFSEvent.LOGOUT, OnLogout);
 
 			sfs.AddEventListener(SFSEvent.ROOM_JOIN, OnRoomJoin);
 			sfs.AddEventListener(SFSEvent.ROOM_JOIN_ERROR, OnRoomJoinError);
@@ -169,6 +184,7 @@ namespace justbake.sfi
 				if(!DestroyOnLoad)
 					DontDestroyOnLoad(this);
 				Application.runInBackground = RunInBackground;
+				networkLogin = GetComponent<NetworkLogin>();
 			}
 		}
 		public virtual void Start() {
@@ -182,6 +198,19 @@ namespace justbake.sfi
 		public virtual void OnApplicationQuit() {
 			if(sfs != null && sfs.IsConnected)
 				sfs.Disconnect();
+		}
+
+		public virtual void OnValidate() {
+			if (PlayerPrefab != null && PlayerPrefab.GetComponent<NetworkUser>() == null) {
+				Debug.LogError("NetworkManager - PlayerPrefab must have a NetworkUser.");
+				PlayerPrefab = null;
+			}
+
+			// This avoids the mysterious "Replacing existing prefab with assetId ... Old prefab 'Player', New prefab 'Player'" warning.
+			if (PlayerPrefab != null && SpawnablePrefabs.Contains(PlayerPrefab)) {
+				Debug.LogWarning("NetworkManager - Player Prefab should not be added to Registered Spawnable Prefabs list...removed it.");
+				SpawnablePrefabs.Remove(PlayerPrefab);
+			}
 		}
 		#endregion
 
@@ -199,11 +228,13 @@ namespace justbake.sfi
 				Debug.Log($"SFS2X API version: {sfs.Version}");
 				Debug.Log($"Connection mode is: {sfs.ConnectionMode}");
 				OnConnectionSuccess();
+				networkLogin.OnStartConnection();
 #if !UNITY_WEBGL
 				if (ConnectionSettings.Encrypt)
 					sfs.InitCrypto();
-				else if (LoginOnConnection)
-					Login(username, password, parameters);
+				else if (networkLogin.LoginOnConnection) {
+					networkLogin.Login();
+				}
 #else
 				if (LoginOnConnection)
 					Login(username, password, parameters);
@@ -229,6 +260,7 @@ namespace justbake.sfi
 				Debug.Log($"Connection was lost, Reason: {reason}");
 				OnConnectionLost(reason);
 			}
+			networkLogin.OnStopConnection();
 		}
 #if !UNITY_WEBGL
 		/// <summary>
@@ -240,8 +272,9 @@ namespace justbake.sfi
 		/// </param>
 		private void OnCryptoInit(BaseEvent evt) {
 			if (evt.TryGetSuccessParam(out bool success) && success) {
-				if (LoginOnConnection)
-					Login(username, password, parameters);
+				if (networkLogin.LoginOnConnection) {
+					networkLogin.Login();
+				}
 			}else if (evt.TryGetErrorMessageParam(out string errorMessage)) {
 				Debug.Log($"Encryption initialization failed: {errorMessage}");
 				sfs.Disconnect();
@@ -274,57 +307,6 @@ namespace justbake.sfi
 			}
 		}
 		#endregion
-		#region Login
-		/// <summary>
-		/// Dispatched when the current user performs a successful login in a server Zone.
-		/// </summary>
-		/// <param name="evt">
-		/// user	(User) An object representing the user who performed the login.
-		/// data	(ISFSObject) An object containing custom parameters returned by a custom login system, if any.
-		/// </param>
-		private void OnLogin(BaseEvent evt) {
-			if (evt.TryGetUserParam(out User user)) {
-				sfs.EnableLagMonitor(EnableLagMonitor, Interval, QueueSize);
-				Debug.Log($"You have logged in as {user.Name}");
-			} else {
-				Debug.LogError("The param user was not found or is not a user!");
-			}
-
-			if (!evt.TryGetDataParam(out ISFSObject data)) {
-				data = new SFSObject();
-			}
-
-			OnLoginSuccess(data);
-			if (InitUdpOnLogin)
-				InitUdp();
-		}
-		/// <summary>
-		/// Dispatched if an error occurs while the user login is being performed.
-		/// </summary>
-		/// <param name="evt">
-		/// errorMessage	(string) A message containing the description of the error.
-		/// errorCode	(short) The error code.
-		/// </param>
-		private void OnLoginError(BaseEvent evt) {
-			if (evt.TryGetErrorMessageParam(out string errorMessage) && evt.TryGetErrorCodeParam(out short errorCode)) {
-				Debug.LogError($"Login Error {errorCode}:\n{errorMessage}");
-				OnLoginError(errorMessage, errorCode);
-			}
-		}
-		/// <summary>
-		/// Dispatched when the current user performs logs out of the server Zone.
-		/// </summary>
-		/// <param name="evt">
-		/// 
-		/// </param>
-		private void OnLogout(BaseEvent evt) {
-			OnLogout();
-
-			if (DisconnectOnLogout) {
-				Disconnect();
-			}
-		}
-		#endregion
 		#region Rooms
 		/// <summary>
 		/// Dispatched when a Room is joined by the current user.
@@ -335,6 +317,9 @@ namespace justbake.sfi
 		private void OnRoomJoin(BaseEvent evt) {
 			if (evt.TryGetRoomParam(out Room room)) {
 				Debug.Log("Room joined: " + room.Name);
+				foreach (User user in room.UserList) {
+					//SpawnPlayer(user);
+				}
 				OnRoomJoin(room);
 				//TODO: make the scene manager load the the appropriate scene the represents the room
 			}
@@ -361,8 +346,8 @@ namespace justbake.sfi
 		/// room	(Room) An object representing the Room that was joined by a user.
 		/// </param>
 		private void OnUserEnterRoom(BaseEvent evt) {
-			//TODO: spawn in a remote user prefab into the game scene if the room is the current scene.
 			if(evt.TryGetUserParam(out User user) && evt.TryGetRoomParam(out Room room)) {
+				//SpawnPlayer(user);
 				Debug.Log($"User: {user.Name} has just joined room: {room.Name}");
 			}
 		}
@@ -377,6 +362,15 @@ namespace justbake.sfi
 			//TODO: destroy user game object in scene if the room is the current scene.
 			//TODO: if the local user left make the scene manager unload the appropriate scene.
 			if (evt.TryGetUserParam(out User user) && evt.TryGetRoomParam(out Room room)) {
+				if (user.Equals(LocalUser)) {
+					foreach (User userToDestroy in room.UserList) {
+						Destroy(GameObject.Find(userToDestroy.Name + "_" + userToDestroy.Id));
+					}
+					if(DestroyPlayerForEachRoom)
+						Destroy(GameObject.Find(user.Name + "_" + user.Id));
+				} else {
+					Destroy(GameObject.Find(user.Name + "_" + user.Id));
+				}
 				Debug.Log($"User: {user.Name} has just left room: {room.Name}");
 			}
 		}
